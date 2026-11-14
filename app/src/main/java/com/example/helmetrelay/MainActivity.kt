@@ -61,34 +61,46 @@ class MainActivity : Activity() {
         addHeader(root, "Режим 2: говорить")
 
         RelayService.talkAuto = prefs.getBoolean("auto", true)
-        root.addView(CheckBox(this).apply {
-            text = "Автоусиление (подстраивается под громкость голоса)"
-            isChecked = RelayService.talkAuto
-            setOnCheckedChangeListener { _, checked ->
-                RelayService.talkAuto = checked
-                prefs.edit().putBoolean("auto", checked).apply()
-            }
-        }, LinearLayout.LayoutParams(-1, -2))
+        val autoIndex = root.childCount // галочка добавляется сюда, выше ползунков
 
         val gainStep = prefs.getInt("gainStep", 30).coerceIn(1, 60)
         RelayService.talkGain = gainStep.toFloat()
-        addSlider(
-            root, { "Усиление микрофона шлема (в авто-режиме максимум): ×${it + 1}" },
+        val gainBox = addSlider(
+            root, { "Усиление микрофона шлема (ручной режим): ×${it + 1}" },
             59, gainStep - 1
         ) {
             RelayService.talkGain = (it + 1).toFloat()
             prefs.edit().putInt("gainStep", it + 1).apply()
         }
 
-        val targetStep = prefs.getInt("targetStep", 15).coerceIn(0, 21)
-        RelayService.talkTarget = 8000f + targetStep * 1000f
-        addSlider(
-            root, { "Громкость в авто-режиме: ${(8000 + it * 1000) * 100 / 32767}%" },
-            21, targetStep
+        val targetStep = prefs.getInt("targetStep2", 10).coerceIn(0, 20)
+        RelayService.talkTarget = 8000f + targetStep * 2000f
+        val targetBox = addSlider(
+            root,
+            {
+                val level = 8000 + it * 2000
+                "Громкость (авто-режим): ${level * 100 / 32767}%" + (if (level > 32767) " (с перегрузом: громче, но с искажениями)" else "")
+            },
+            20, targetStep
         ) {
-            RelayService.talkTarget = 8000f + it * 1000f
-            prefs.edit().putInt("targetStep", it).apply()
+            RelayService.talkTarget = 8000f + it * 2000f
+            prefs.edit().putInt("targetStep2", it).apply()
         }
+
+        fun applyAutoVisibility() {
+            gainBox.visibility = if (RelayService.talkAuto) android.view.View.GONE else android.view.View.VISIBLE
+            targetBox.visibility = if (RelayService.talkAuto) android.view.View.VISIBLE else android.view.View.GONE
+        }
+        root.addView(CheckBox(this).apply {
+            text = "Автоусиление (подстраивается под громкость голоса)"
+            isChecked = RelayService.talkAuto
+            setOnCheckedChangeListener { _, checked ->
+                RelayService.talkAuto = checked
+                prefs.edit().putBoolean("auto", checked).apply()
+                applyAutoVisibility()
+            }
+        }, autoIndex, LinearLayout.LayoutParams(-1, -2))
+        applyAutoVisibility()
 
         val talkGateStep = prefs.getInt("talkGateStep", 0).coerceIn(0, 60)
         RelayService.talkGate = talkGateStep * 25
@@ -213,12 +225,13 @@ class MainActivity : Activity() {
         max: Int,
         initial: Int,
         onChange: (Int) -> Unit
-    ) {
+    ): LinearLayout {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val tv = TextView(this).apply {
             textSize = 14f
             text = label(initial)
         }
-        root.addView(tv, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 16 })
+        box.addView(tv, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 16 })
         val bar = SeekBar(this)
         bar.max = max
         bar.progress = initial
@@ -231,7 +244,9 @@ class MainActivity : Activity() {
             override fun onStartTrackingTouch(sb: SeekBar?) {}
             override fun onStopTrackingTouch(sb: SeekBar?) {}
         })
-        root.addView(bar, LinearLayout.LayoutParams(-1, -2))
+        box.addView(bar, LinearLayout.LayoutParams(-1, -2))
+        root.addView(box, LinearLayout.LayoutParams(-1, -2))
+        return box
     }
 
     private fun render(m: RelayService.Mode, lines: List<String>) {

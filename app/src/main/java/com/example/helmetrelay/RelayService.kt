@@ -368,7 +368,7 @@ class RelayService : Service() {
                             if (reports < 6) {
                                 reports++
                                 val gainInfo = if (m == Mode.TALK) {
-                                    ", усиление ×${"%.1f".format(if (talkAuto) agc.coerceAtMost(talkGain) else talkGain)}" +
+                                    ", усиление ×${"%.1f".format(if (talkAuto) agc.coerceAtMost(60f) else talkGain)}" +
                                         (if (talkAuto) " (авто)" else "")
                                 } else ""
                                 log("Пик сигнала с микрофона: $peak из 32767$gainInfo")
@@ -376,14 +376,14 @@ class RelayService : Service() {
                             peak = 0
                             chunks = 0
                         }
-                        val maxG = talkGain
+                        val maxG = if (talkAuto) 60f else talkGain
                         var g = maxG
                         if (m == Mode.TALK && talkAuto) {
                             // АРУ: цель задаётся talkTarget; ниже порога 50 (пауза) усиление не меняется
                             if (cp >= maxOf(50, talkGate / 2)) {
                                 val desired = (talkTarget / cp).coerceIn(1f, maxG)
                                 agc = if (desired < agc) desired else minOf(desired, agc * 1.06f)
-                                if (cp * agc > 29000f) agc = 29000f / cp // ограничитель от перегруза
+                                if (cp * agc > talkTarget * 1.4f) agc = talkTarget * 1.4f / cp // ограничитель всплесков
                             }
                             g = agc.coerceAtMost(maxG)
                         }
