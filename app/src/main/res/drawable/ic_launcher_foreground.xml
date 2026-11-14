@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group android:translateX="-6">
+        <!-- корпус шлема -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M30,62 C30,44 42,34 56,34 C68,34 78,43 78,56 L78,66 C78,68 76,70 74,70 L36,70 C32,70 30,66 30,62 Z" />
+        <!-- визор -->
+        <path
+            android:fillColor="#1565C0"
+            android:pathData="M52,47 L76,47 L76,58 L50,58 Z" />
+        <!-- звуковые волны -->
+        <path
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:pathData="M84,50 C88,54 88,60 84,64" />
+        <path
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:pathData="M89,45 C95,52 95,62 89,69" />
+    </group>
+</vector>
