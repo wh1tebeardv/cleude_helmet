@@ -16,6 +16,7 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.media.audiofx.NoiseSuppressor
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -56,6 +57,18 @@ class RelayService : Service() {
         @Volatile
         var talkSource: Int = MediaRecorder.AudioSource.MIC
 
+        /** Целевой пиковый уровень автоусиления в режиме TALK (из 32767). */
+        @Volatile
+        var talkTarget: Float = 20000f
+
+        /** Режим LISTEN: порог тишины по пику (0 = выключен). Ниже порога звук в шлем не передаётся. */
+        @Volatile
+        var listenGate: Int = 0
+
+        /** Режим LISTEN: полосовой фильтр 300–3400 Гц и шумоподавитель системы. */
+        @Volatile
+        var listenFilter: Boolean = true
+
         @Volatile
         var listener: ((Mode, List<String>) -> Unit)? = null
 
@@ -75,6 +88,7 @@ class RelayService : Service() {
     private var track: AudioTrack? = null
     private var savedMusic = -1
     private var savedCall = -1
+    private var ns: NoiseSuppressor? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -186,6 +200,19 @@ class RelayService : Service() {
         }
         log("LISTEN: вход=${name(micIn)}, выход=${name(out)}")
         val r = buildRecord(MediaRecorder.AudioSource.MIC, micIn) ?: return
+        if (listenFilter) {
+            try {
+                if (NoiseSuppressor.isAvailable()) {
+                    ns = NoiseSuppressor.create(r.audioSessionId)
+                    ns?.setEnabled(true)
+                    log("NoiseSuppressor: включён=${ns?.getEnabled()}")
+                } else {
+                    log("NoiseSuppressor на этом телефоне недоступен")
+                }
+            } catch (e: Exception) {
+                log("NoiseSuppressor не удалось включить: ${e.javaClass.simpleName}")
+            }
+        }
         val t = buildTrack(usage, out)
         if (t == null) {
             r.release()
@@ -317,6 +344,10 @@ class RelayService : Service() {
                 var chunks = 0
                 var reports = 0
                 var agc = 8f
+                val hp = biquad(true, 300f)
+                val lp = biquad(false, 3400f)
+                var gate = 1f
+                var holdChunks = 0
                 while (running) {
                     val n = r.read(buf, 0, buf.size)
                     if (n > 0) {
@@ -330,7 +361,11 @@ class RelayService : Service() {
                         if (++chunks >= 100) {
                             if (reports < 6) {
                                 reports++
-                                log("Пик сигнала с микрофона: $peak из 32767, усиление ×${"%.1f".format(if (talkAuto) agc.coerceAtMost(talkGain) else talkGain)}${if (talkAuto) " (авто)" else ""}")
+                                val gainInfo = if (m == Mode.TALK) {
+                                    ", усиление ×${"%.1f".format(if (talkAuto) agc.coerceAtMost(talkGain) else talkGain)}" +
+                                        (if (talkAuto) " (авто)" else "")
+                                } else ""
+                                log("Пик сигнала с микрофона: $peak из 32767$gainInfo")
                             }
                             peak = 0
                             chunks = 0
@@ -338,17 +373,32 @@ class RelayService : Service() {
                         val maxG = talkGain
                         var g = maxG
                         if (m == Mode.TALK && talkAuto) {
-                            // АРУ: цель — пик около 10000; ниже порога 50 (пауза) усиление не меняется
+                            // АРУ: цель задаётся talkTarget; ниже порога 50 (пауза) усиление не меняется
                             if (cp >= 50) {
-                                val desired = (10000f / cp).coerceIn(1f, maxG)
+                                val desired = (talkTarget / cp).coerceIn(1f, maxG)
                                 agc = if (desired < agc) desired else minOf(desired, agc * 1.06f)
-                                if (cp * agc > 24000f) agc = 24000f / cp // ограничитель от перегруза
+                                if (cp * agc > 29000f) agc = 29000f / cp // ограничитель от перегруза
                             }
                             g = agc.coerceAtMost(maxG)
                         }
                         if (m == Mode.TALK && g != 1f) {
                             for (i in 0 until n) {
-                                buf[i] = (buf[i] * g).toInt().coerceIn(-32768, 32767).toShort()
+                                buf[i] = softClip(buf[i] * g).toInt().coerceIn(-32768, 32767).toShort()
+                            }
+                        }
+                        if (m == Mode.LISTEN) {
+                            // порог тишины по пику исходного сигнала; после речи канал держится открытым ~300 мс
+                            val th = listenGate
+                            if (th > 0) {
+                                if (cp >= th) holdChunks = 15 else if (holdChunks > 0) holdChunks--
+                            }
+                            val tgt = if (th <= 0 || holdChunks > 0) 1f else 0f
+                            val filt = listenFilter
+                            for (i in 0 until n) {
+                                var x = buf[i].toFloat()
+                                if (filt) x = lp.process(hp.process(x))
+                                gate = if (gate < tgt) minOf(tgt, gate + 1f / 80f) else maxOf(tgt, gate - 1f / 320f)
+                                buf[i] = (x * gate).toInt().coerceIn(-32768, 32767).toShort()
                             }
                         }
                         t.write(buf, 0, n)
@@ -364,6 +414,11 @@ class RelayService : Service() {
                 }
             } catch (e: Exception) {
                 if (running) log("Сбой потока: ${e.javaClass.simpleName}: ${e.message}")
+            }
+            if (running) {
+                // цикл завершился сам (ошибка чтения, обрыв связи со шлемом)
+                mode = Mode.IDLE
+                log("Канал остановлен из-за ошибки (шлем отключился?). Нажмите кнопку режима заново.")
             }
         }.also { it.start() }
     }
@@ -383,10 +438,56 @@ class RelayService : Service() {
             track?.stop()
         } catch (_: Exception) {
         }
+        try {
+            ns?.release()
+        } catch (_: Exception) {
+        }
+        ns = null
         rec?.release()
         track?.release()
         rec = null
         track = null
+    }
+
+    // ---------- обработка сигнала ----------
+
+    /** Биквадратный фильтр (транспонированная прямая форма II). */
+    private class Biquad(
+        private val b0: Float,
+        private val b1: Float,
+        private val b2: Float,
+        private val a1: Float,
+        private val a2: Float
+    ) {
+        private var z1 = 0f
+        private var z2 = 0f
+
+        fun process(x: Float): Float {
+            val y = b0 * x + z1
+            z1 = b1 * x - a1 * y + z2
+            z2 = b2 * x - a2 * y
+            return y
+        }
+    }
+
+    /** Фильтр Баттерворта 2-го порядка (формулы RBJ, Q=0.7071) для частоты дискретизации RATE. */
+    private fun biquad(highPass: Boolean, fc: Float): Biquad {
+        val w0 = 2.0 * Math.PI * fc / RATE
+        val cosW = Math.cos(w0).toFloat()
+        val alpha = (Math.sin(w0) / (2.0 * 0.7071)).toFloat()
+        val a0 = 1f + alpha
+        val b0 = if (highPass) (1f + cosW) / 2f else (1f - cosW) / 2f
+        val b1 = if (highPass) -(1f + cosW) else 1f - cosW
+        return Biquad(b0 / a0, b1 / a0, b0 / a0, (-2f * cosW) / a0, (1f - alpha) / a0)
+    }
+
+    /** Мягкое ограничение: до 22000 без изменений, выше плавно приближается к 32767. */
+    private fun softClip(x: Float): Float {
+        val a = kotlin.math.abs(x)
+        if (a <= 22000f) return x
+        val over = (a - 22000f) / 10767f
+        val s = 22000f + 10767f * (over / (1f + over))
+        return if (x < 0f) -s else s
     }
 
     // ---------- журнал и публикация состояния ----------
