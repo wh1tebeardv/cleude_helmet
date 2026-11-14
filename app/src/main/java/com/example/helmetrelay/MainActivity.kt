@@ -11,6 +11,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 
 class MainActivity : Activity() {
@@ -48,6 +49,31 @@ class MainActivity : Activity() {
             setOnClickListener { send(RelayService.ACTION_STOP) }
         }
         root.addView(btnStop, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 16 })
+
+        val prefs = getSharedPreferences("relay", MODE_PRIVATE)
+        val gainStep = prefs.getInt("gainStep", 4) // усиление = шаг (×1 … ×15)
+        RelayService.talkGain = gainStep.toFloat()
+        val gainLabel = TextView(this).apply {
+            textSize = 14f
+            text = "Усиление микрофона шлема в режиме 2: ×$gainStep"
+        }
+        root.addView(gainLabel, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 16 })
+        val gainBar = SeekBar(this).apply {
+            max = 14
+            progress = gainStep - 1
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                    val step = value + 1
+                    RelayService.talkGain = step.toFloat()
+                    gainLabel.text = "Усиление микрофона шлема в режиме 2: ×$step"
+                    prefs.edit().putInt("gainStep", step).apply()
+                }
+
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        root.addView(gainBar, LinearLayout.LayoutParams(-1, -2))
 
         logView = TextView(this).apply { textSize = 12f }
         val scroll = ScrollView(this)

@@ -44,6 +44,10 @@ class RelayService : Service() {
         @Volatile
         var mode: Mode = Mode.IDLE
 
+        /** Программное усиление сигнала в режиме TALK (микрофон шлема -> динамик телефона). */
+        @Volatile
+        var talkGain: Float = 4f
+
         @Volatile
         var listener: ((Mode, List<String>) -> Unit)? = null
 
@@ -61,6 +65,8 @@ class RelayService : Service() {
     private var running = false
     private var rec: AudioRecord? = null
     private var track: AudioTrack? = null
+    private var savedMusic = -1
+    private var savedCall = -1
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -191,6 +197,18 @@ class RelayService : Service() {
         am.mode = AudioManager.MODE_IN_COMMUNICATION
         log("TALK: setCommunicationDevice(SCO)=${am.setCommunicationDevice(sco)}")
         Thread.sleep(1000) // время на поднятие SCO-канала
+        try {
+            if (savedMusic < 0) savedMusic = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            if (savedCall < 0) savedCall = am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC), 0)
+            am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL), 0)
+            log(
+                "Громкость: музыка=${am.getStreamVolume(AudioManager.STREAM_MUSIC)}/${am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}, " +
+                    "разговор=${am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)}/${am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)}"
+            )
+        } catch (e: Exception) {
+            log("Не удалось выставить громкость: ${e.javaClass.simpleName}")
+        }
         val btIn = am.getDevices(AudioManager.GET_DEVICES_INPUTS)
             .firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
         val spk = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
@@ -212,6 +230,10 @@ class RelayService : Service() {
     private fun restoreAudio() {
         try {
             val am = getSystemService(AudioManager::class.java)
+            if (savedMusic >= 0) am.setStreamVolume(AudioManager.STREAM_MUSIC, savedMusic, 0)
+            if (savedCall >= 0) am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, savedCall, 0)
+            savedMusic = -1
+            savedCall = -1
             am.clearCommunicationDevice()
             am.mode = AudioManager.MODE_NORMAL
         } catch (_: Exception) {
@@ -282,9 +304,31 @@ class RelayService : Service() {
                 r.startRecording()
                 t.play()
                 var first = true
+                var peak = 0
+                var chunks = 0
+                var reports = 0
                 while (running) {
                     val n = r.read(buf, 0, buf.size)
                     if (n > 0) {
+                        // пиковый уровень исходного сигнала (до усиления), отчёт раз в ~2 с, первые 4 раза
+                        for (i in 0 until n) {
+                            val a = kotlin.math.abs(buf[i].toInt())
+                            if (a > peak) peak = a
+                        }
+                        if (++chunks >= 100) {
+                            if (reports < 4) {
+                                reports++
+                                log("Пик сигнала с микрофона: $peak из 32767")
+                            }
+                            peak = 0
+                            chunks = 0
+                        }
+                        val g = talkGain
+                        if (m == Mode.TALK && g != 1f) {
+                            for (i in 0 until n) {
+                                buf[i] = (buf[i] * g).toInt().coerceIn(-32768, 32767).toShort()
+                            }
+                        }
                         t.write(buf, 0, n)
                         if (first) {
                             first = false
