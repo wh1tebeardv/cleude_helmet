@@ -51,21 +51,21 @@ class MainActivity : Activity() {
         root.addView(btnStop, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 16 })
 
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
-        val gainStep = prefs.getInt("gainStep", 4) // усиление = шаг (×1 … ×15)
+        val gainStep = prefs.getInt("gainStep", 15) // усиление = шаг (×1 … ×15)
         RelayService.talkGain = gainStep.toFloat()
         val gainLabel = TextView(this).apply {
             textSize = 14f
-            text = "Усиление микрофона шлема в режиме 2: ×$gainStep"
+            text = "Усиление микрофона шлема (в авто-режиме максимум): ×$gainStep"
         }
         root.addView(gainLabel, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 16 })
         val gainBar = SeekBar(this).apply {
-            max = 14
+            max = 39
             progress = gainStep - 1
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
                     val step = value + 1
                     RelayService.talkGain = step.toFloat()
-                    gainLabel.text = "Усиление микрофона шлема в режиме 2: ×$step"
+                    gainLabel.text = "Усиление микрофона шлема (в авто-режиме максимум): ×$step"
                     prefs.edit().putInt("gainStep", step).apply()
                 }
 
@@ -74,6 +74,17 @@ class MainActivity : Activity() {
             })
         }
         root.addView(gainBar, LinearLayout.LayoutParams(-1, -2))
+
+        RelayService.talkAuto = prefs.getBoolean("auto", true)
+        val autoBox = android.widget.CheckBox(this).apply {
+            text = "Автоусиление (подстраивается под громкость голоса)"
+            isChecked = RelayService.talkAuto
+            setOnCheckedChangeListener { _, checked ->
+                RelayService.talkAuto = checked
+                prefs.edit().putBoolean("auto", checked).apply()
+            }
+        }
+        root.addView(autoBox, LinearLayout.LayoutParams(-1, -2))
 
         val sources = listOf(
             "Голосовой (VOICE_COMMUNICATION)" to android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION,

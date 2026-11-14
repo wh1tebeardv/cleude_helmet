@@ -48,6 +48,10 @@ class RelayService : Service() {
         @Volatile
         var talkGain: Float = 4f
 
+        /** true: автоматическая регулировка усиления (talkGain тогда служит верхним пределом). */
+        @Volatile
+        var talkAuto: Boolean = true
+
         /** Источник захвата для режима TALK (задаётся из UI). */
         @Volatile
         var talkSource: Int = MediaRecorder.AudioSource.MIC
@@ -312,23 +316,36 @@ class RelayService : Service() {
                 var peak = 0
                 var chunks = 0
                 var reports = 0
+                var agc = 8f
                 while (running) {
                     val n = r.read(buf, 0, buf.size)
                     if (n > 0) {
                         // пиковый уровень исходного сигнала (до усиления), отчёт раз в ~2 с, первые 4 раза
+                        var cp = 0
                         for (i in 0 until n) {
                             val a = kotlin.math.abs(buf[i].toInt())
-                            if (a > peak) peak = a
+                            if (a > cp) cp = a
                         }
+                        if (cp > peak) peak = cp
                         if (++chunks >= 100) {
                             if (reports < 6) {
                                 reports++
-                                log("Пик сигнала с микрофона: $peak из 32767")
+                                log("Пик сигнала с микрофона: $peak из 32767, усиление ×${"%.1f".format(if (talkAuto) agc.coerceAtMost(talkGain) else talkGain)}${if (talkAuto) " (авто)" else ""}")
                             }
                             peak = 0
                             chunks = 0
                         }
-                        val g = talkGain
+                        val maxG = talkGain
+                        var g = maxG
+                        if (m == Mode.TALK && talkAuto) {
+                            // АРУ: цель — пик около 10000; ниже порога 50 (пауза) усиление не меняется
+                            if (cp >= 50) {
+                                val desired = (10000f / cp).coerceIn(1f, maxG)
+                                agc = if (desired < agc) desired else minOf(desired, agc * 1.06f)
+                                if (cp * agc > 24000f) agc = 24000f / cp // ограничитель от перегруза
+                            }
+                            g = agc.coerceAtMost(maxG)
+                        }
                         if (m == Mode.TALK && g != 1f) {
                             for (i in 0 until n) {
                                 buf[i] = (buf[i] * g).toInt().coerceIn(-32768, 32767).toShort()
