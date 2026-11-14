@@ -70,7 +70,7 @@ class MainActivity : Activity() {
             }
         }, LinearLayout.LayoutParams(-1, -2))
 
-        val gainStep = prefs.getInt("gainStep", 15).coerceIn(1, 60)
+        val gainStep = prefs.getInt("gainStep", 30).coerceIn(1, 60)
         RelayService.talkGain = gainStep.toFloat()
         addSlider(
             root, { "Усиление микрофона шлема (в авто-режиме максимум): ×${it + 1}" },
@@ -80,7 +80,7 @@ class MainActivity : Activity() {
             prefs.edit().putInt("gainStep", it + 1).apply()
         }
 
-        val targetStep = prefs.getInt("targetStep", 12).coerceIn(0, 21)
+        val targetStep = prefs.getInt("targetStep", 15).coerceIn(0, 21)
         RelayService.talkTarget = 8000f + targetStep * 1000f
         addSlider(
             root, { "Громкость в авто-режиме: ${(8000 + it * 1000) * 100 / 32767}%" },
@@ -90,12 +90,33 @@ class MainActivity : Activity() {
             prefs.edit().putInt("targetStep", it).apply()
         }
 
+        val talkGateStep = prefs.getInt("talkGateStep", 0).coerceIn(0, 60)
+        RelayService.talkGate = talkGateStep * 25
+        addSlider(
+            root,
+            { if (it == 0) "Порог тишины (против эха): выключен" else "Порог тишины (против эха): ${it * 25} (пик сигнала, ниже — тишина)" },
+            60, talkGateStep
+        ) {
+            RelayService.talkGate = it * 25
+            prefs.edit().putInt("talkGateStep", it).apply()
+        }
+
+        RelayService.talkEffects = prefs.getBoolean("talkEffects", true)
+        root.addView(CheckBox(this).apply {
+            text = "Эхо- и шумоподавление системы (применяется при следующем нажатии «2»)"
+            isChecked = RelayService.talkEffects
+            setOnCheckedChangeListener { _, checked ->
+                RelayService.talkEffects = checked
+                prefs.edit().putBoolean("talkEffects", checked).apply()
+            }
+        }, LinearLayout.LayoutParams(-1, -2))
+
         val sources = listOf(
             "Голосовой (VOICE_COMMUNICATION)" to MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             "Обычный (MIC)" to MediaRecorder.AudioSource.MIC,
             "Распознавание (VOICE_RECOGNITION)" to MediaRecorder.AudioSource.VOICE_RECOGNITION
         )
-        var srcIdx = prefs.getInt("srcIdx", 1).coerceIn(0, sources.size - 1)
+        var srcIdx = prefs.getInt("srcIdx", 0).coerceIn(0, sources.size - 1)
         RelayService.talkSource = sources[srcIdx].second
         val srcBtn = Button(this)
         fun srcText() = "Источник микрофона шлема: ${sources[srcIdx].first}\n(применяется при следующем нажатии «2»)"
@@ -111,15 +132,35 @@ class MainActivity : Activity() {
         // ---------- настройки режима 1 (телефон → шлем) ----------
         addHeader(root, "Режим 1: слушать")
 
-        RelayService.listenFilter = prefs.getBoolean("filter", true)
+        RelayService.listenFilter = prefs.getBoolean("lfilter", false)
         root.addView(CheckBox(this).apply {
-            text = "Фильтр речи 300–3400 Гц и шумоподавитель (применяется при следующем нажатии «1»)"
+            text = "Фильтр речи 300–3400 Гц"
             isChecked = RelayService.listenFilter
             setOnCheckedChangeListener { _, checked ->
                 RelayService.listenFilter = checked
-                prefs.edit().putBoolean("filter", checked).apply()
+                prefs.edit().putBoolean("lfilter", checked).apply()
             }
         }, LinearLayout.LayoutParams(-1, -2))
+
+        RelayService.listenNs = prefs.getBoolean("lns", false)
+        root.addView(CheckBox(this).apply {
+            text = "Шумоподавитель системы (применяется при следующем нажатии «1»)"
+            isChecked = RelayService.listenNs
+            setOnCheckedChangeListener { _, checked ->
+                RelayService.listenNs = checked
+                prefs.edit().putBoolean("lns", checked).apply()
+            }
+        }, LinearLayout.LayoutParams(-1, -2))
+
+        val listenGainStep = prefs.getInt("listenGainStep", 0).coerceIn(0, 10)
+        RelayService.listenGain = 1f + listenGainStep * 0.5f
+        addSlider(
+            root, { "Усиление звука в шлеме: ×${1f + it * 0.5f}" },
+            10, listenGainStep
+        ) {
+            RelayService.listenGain = 1f + it * 0.5f
+            prefs.edit().putInt("listenGainStep", it).apply()
+        }
 
         val gateStep = prefs.getInt("gateStep", 0).coerceIn(0, 48)
         RelayService.listenGate = gateStep * 250

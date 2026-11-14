@@ -16,6 +16,7 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import android.os.Handler
 import android.os.IBinder
@@ -65,9 +66,25 @@ class RelayService : Service() {
         @Volatile
         var listenGate: Int = 0
 
-        /** Режим LISTEN: полосовой фильтр 300–3400 Гц и шумоподавитель системы. */
+        /** Режим LISTEN: полосовой фильтр 300–3400 Гц. */
         @Volatile
-        var listenFilter: Boolean = true
+        var listenFilter: Boolean = false
+
+        /** Режим LISTEN: системный шумоподавитель (NoiseSuppressor). */
+        @Volatile
+        var listenNs: Boolean = false
+
+        /** Режим LISTEN: дополнительное усиление. */
+        @Volatile
+        var listenGain: Float = 1f
+
+        /** Режим TALK: порог тишины по пику (0 = выключен), помогает против эха динамика. */
+        @Volatile
+        var talkGate: Int = 0
+
+        /** Режим TALK: системные эхо- и шумоподавитель на записи. */
+        @Volatile
+        var talkEffects: Boolean = true
 
         @Volatile
         var listener: ((Mode, List<String>) -> Unit)? = null
@@ -89,6 +106,7 @@ class RelayService : Service() {
     private var savedMusic = -1
     private var savedCall = -1
     private var ns: NoiseSuppressor? = null
+    private var aec: AcousticEchoCanceler? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -200,19 +218,7 @@ class RelayService : Service() {
         }
         log("LISTEN: вход=${name(micIn)}, выход=${name(out)}")
         val r = buildRecord(MediaRecorder.AudioSource.MIC, micIn) ?: return
-        if (listenFilter) {
-            try {
-                if (NoiseSuppressor.isAvailable()) {
-                    ns = NoiseSuppressor.create(r.audioSessionId)
-                    ns?.setEnabled(true)
-                    log("NoiseSuppressor: включён=${ns?.getEnabled()}")
-                } else {
-                    log("NoiseSuppressor на этом телефоне недоступен")
-                }
-            } catch (e: Exception) {
-                log("NoiseSuppressor не удалось включить: ${e.javaClass.simpleName}")
-            }
-        }
+        attachEffects(r, listenNs, false)
         val t = buildTrack(usage, out)
         if (t == null) {
             r.release()
@@ -255,6 +261,7 @@ class RelayService : Service() {
         }
         log("TALK: источник захвата=${talkSource} (1=MIC, 6=VOICE_RECOGNITION, 7=VOICE_COMMUNICATION)")
         val r = buildRecord(talkSource, btIn) ?: return
+        attachEffects(r, talkEffects, talkEffects)
         val t = buildTrack(AudioAttributes.USAGE_MEDIA, spk)
         if (t == null) {
             r.release()
@@ -346,8 +353,7 @@ class RelayService : Service() {
                 var agc = 8f
                 val hp = biquad(true, 300f)
                 val lp = biquad(false, 3400f)
-                var gate = 1f
-                var holdChunks = 0
+                val gate = Gate(if (m == Mode.LISTEN) 6 else 3) // опережение 120 мс и 60 мс
                 while (running) {
                     val n = r.read(buf, 0, buf.size)
                     if (n > 0) {
@@ -374,7 +380,7 @@ class RelayService : Service() {
                         var g = maxG
                         if (m == Mode.TALK && talkAuto) {
                             // АРУ: цель задаётся talkTarget; ниже порога 50 (пауза) усиление не меняется
-                            if (cp >= 50) {
+                            if (cp >= maxOf(50, talkGate / 2)) {
                                 val desired = (talkTarget / cp).coerceIn(1f, maxG)
                                 agc = if (desired < agc) desired else minOf(desired, agc * 1.06f)
                                 if (cp * agc > 29000f) agc = 29000f / cp // ограничитель от перегруза
@@ -387,21 +393,20 @@ class RelayService : Service() {
                             }
                         }
                         if (m == Mode.LISTEN) {
-                            // порог тишины по пику исходного сигнала; после речи канал держится открытым ~300 мс
-                            val th = listenGate
-                            if (th > 0) {
-                                if (cp >= th) holdChunks = 15 else if (holdChunks > 0) holdChunks--
-                            }
-                            val tgt = if (th <= 0 || holdChunks > 0) 1f else 0f
                             val filt = listenFilter
-                            for (i in 0 until n) {
-                                var x = buf[i].toFloat()
-                                if (filt) x = lp.process(hp.process(x))
-                                gate = if (gate < tgt) minOf(tgt, gate + 1f / 80f) else maxOf(tgt, gate - 1f / 320f)
-                                buf[i] = (x * gate).toInt().coerceIn(-32768, 32767).toShort()
+                            val lg = listenGain
+                            if (filt || lg != 1f) {
+                                for (i in 0 until n) {
+                                    var x = buf[i].toFloat()
+                                    if (filt) x = lp.process(hp.process(x))
+                                    buf[i] = softClip(x * lg).toInt().coerceIn(-32768, 32767).toShort()
+                                }
                             }
                         }
-                        t.write(buf, 0, n)
+                        // порог тишины считается по пику исходного сигнала (тем же числам, что в журнале)
+                        val th = if (m == Mode.LISTEN) listenGate else talkGate
+                        val out = gate.push(buf, n, cp, th)
+                        if (out != null) t.write(out, 0, out.size)
                         if (first) {
                             first = false
                             log("Фактический маршрут: вход=${name(r.routedDevice)}, выход=${name(t.routedDevice)}")
@@ -443,6 +448,11 @@ class RelayService : Service() {
         } catch (_: Exception) {
         }
         ns = null
+        try {
+            aec?.release()
+        } catch (_: Exception) {
+        }
+        aec = null
         rec?.release()
         track?.release()
         rec = null
@@ -488,6 +498,65 @@ class RelayService : Service() {
         val over = (a - 22000f) / 10767f
         val s = 22000f + 10767f * (over / (1f + over))
         return if (x < 0f) -s else s
+    }
+
+    /** Подключает к записи системные шумо- и эхоподавитель, если телефон их поддерживает. */
+    private fun attachEffects(r: AudioRecord, wantNs: Boolean, wantAec: Boolean) {
+        try {
+            if (wantNs) {
+                if (NoiseSuppressor.isAvailable()) {
+                    ns = NoiseSuppressor.create(r.audioSessionId)
+                    ns?.setEnabled(true)
+                    log("NoiseSuppressor: включён=${ns?.getEnabled()}")
+                } else {
+                    log("NoiseSuppressor на этом телефоне недоступен")
+                }
+            }
+            if (wantAec) {
+                if (AcousticEchoCanceler.isAvailable()) {
+                    aec = AcousticEchoCanceler.create(r.audioSessionId)
+                    aec?.setEnabled(true)
+                    log("Эхоподавитель (AEC): включён=${aec?.getEnabled()}")
+                } else {
+                    log("Эхоподавитель (AEC) на этом телефоне недоступен")
+                }
+            }
+        } catch (e: Exception) {
+            log("Системные эффекты не включены: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Порог тишины с опережением: звук задерживается на [lookahead] блоков по 20 мс, а решение об открытии
+     * принимается по самому свежему блоку. Поэтому канал успевает открыться до начала громкой части слова.
+     * Возвращает блок для вывода или null, пока очередь заполняется.
+     */
+    private class Gate(private val lookahead: Int) {
+        private val queue = java.util.ArrayDeque<ShortArray>()
+        private var gain = 1f
+        private var hold = 0
+
+        fun push(chunk: ShortArray, n: Int, peak: Int, th: Int): ShortArray? {
+            if (th <= 0) {
+                queue.clear()
+                hold = 0
+                gain = 1f
+                return chunk.copyOf(n)
+            }
+            // открыться при пике >= порога; пока пик >= половины порога, держать открытым; затем пауза ~500 мс
+            if (peak >= th) hold = 25
+            else if (peak >= th / 2) hold = maxOf(hold, 10)
+            else if (hold > 0) hold--
+            val tgt = if (hold > 0) 1f else 0f
+            queue.addLast(chunk.copyOf(n))
+            if (queue.size <= lookahead) return null
+            val out = queue.removeFirst()
+            for (i in out.indices) {
+                gain = if (gain < tgt) minOf(tgt, gain + 1f / 80f) else maxOf(tgt, gain - 1f / 320f)
+                out[i] = (out[i] * gain).toInt().coerceIn(-32768, 32767).toShort()
+            }
+            return out
+        }
     }
 
     // ---------- журнал и публикация состояния ----------
