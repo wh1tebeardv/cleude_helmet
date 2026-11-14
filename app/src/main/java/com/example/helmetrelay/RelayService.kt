@@ -48,6 +48,10 @@ class RelayService : Service() {
         @Volatile
         var talkGain: Float = 4f
 
+        /** Источник захвата для режима TALK (задаётся из UI). */
+        @Volatile
+        var talkSource: Int = MediaRecorder.AudioSource.MIC
+
         @Volatile
         var listener: ((Mode, List<String>) -> Unit)? = null
 
@@ -218,7 +222,8 @@ class RelayService : Service() {
             log("Не найдено нужное устройство ввода или вывода.")
             return
         }
-        val r = buildRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, btIn) ?: return
+        log("TALK: источник захвата=${talkSource} (1=MIC, 6=VOICE_RECOGNITION, 7=VOICE_COMMUNICATION)")
+        val r = buildRecord(talkSource, btIn) ?: return
         val t = buildTrack(AudioAttributes.USAGE_MEDIA, spk)
         if (t == null) {
             r.release()
@@ -316,7 +321,7 @@ class RelayService : Service() {
                             if (a > peak) peak = a
                         }
                         if (++chunks >= 100) {
-                            if (reports < 4) {
+                            if (reports < 6) {
                                 reports++
                                 log("Пик сигнала с микрофона: $peak из 32767")
                             }

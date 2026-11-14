@@ -75,6 +75,24 @@ class MainActivity : Activity() {
         }
         root.addView(gainBar, LinearLayout.LayoutParams(-1, -2))
 
+        val sources = listOf(
+            "Голосовой (VOICE_COMMUNICATION)" to android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+            "Обычный (MIC)" to android.media.MediaRecorder.AudioSource.MIC,
+            "Распознавание (VOICE_RECOGNITION)" to android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION
+        )
+        var srcIdx = prefs.getInt("srcIdx", 1).coerceIn(0, sources.size - 1)
+        RelayService.talkSource = sources[srcIdx].second
+        val srcBtn = Button(this)
+        fun srcText() = "Источник микрофона шлема: ${sources[srcIdx].first}\n(применяется при следующем нажатии «2»)"
+        srcBtn.text = srcText()
+        srcBtn.setOnClickListener {
+            srcIdx = (srcIdx + 1) % sources.size
+            RelayService.talkSource = sources[srcIdx].second
+            prefs.edit().putInt("srcIdx", srcIdx).apply()
+            srcBtn.text = srcText()
+        }
+        root.addView(srcBtn, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 8 })
+
         logView = TextView(this).apply { textSize = 12f }
         val scroll = ScrollView(this)
         scroll.addView(logView)
